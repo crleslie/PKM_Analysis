@@ -1,0 +1,382 @@
+---
+title: "Colorado Retail Ammunition Market Analysis"
+subtitle: "Exploratory Pricing, Availability, and Lead vs. Lead-Free Comparisons"
+author: "Analysis Pipeline"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    theme: flatly
+    toc: true
+    toc_depth: 3
+    toc_float: true
+    code_folding: hide
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  warning = FALSE,
+  message = FALSE,
+  fig.width = 9,
+  fig.height = 6,
+  dpi = 300
+)
+
+library(tidyverse)
+library(knitr)
+library(scales)
+library(readxl)
+library(writexl)
+
+# Focus on common big game calibers in Colorado/Western hunting (e.g., 270 Win, 308 Win, 30-06, 6.5 Creedmoor)
+key_calibers <- c("270 Win", "308 Win", "30-06 Springfield", "6.5 Creedmoor", "300 Win Mag", "300 WSM", "243 Win", "7mm Rem Mag", "7mm-08 Rem")
+
+# Load cleaned dataset
+ammo <- read_excel("results/ammo_clean.xlsx") %>%
+  filter(
+    !str_detect(coalesce(name, ""), regex("FMJ|Full Metal", ignore_case = TRUE))
+  ) %>%
+  mutate(dedup_id = coalesce(upc, mpn, name)) %>%
+  group_by(retailer, dedup_id) %>%
+  slice_max(order_by = date, n = 1, with_ties = FALSE) %>%
+  ungroup() %>%
+  filter(caliber %in% key_calibers)
+  
+  
+
+#unique_ammo <- read_excel("results/unique_ammo_AG.xlsx", sheet = "Adam") %>%
+#  filter(Exclude == FALSE)
+```
+
+## Dataset Overview
+
+```{r overall-summary}
+overall_summary <- ammo %>%
+  filter(!is.na(ppr), ppr > 0) %>%
+  summarise(
+    `Total Listings` = n(),
+    `Mean PPR`       = mean(ppr, na.rm = TRUE),
+    `Median PPR`     = median(ppr, na.rm = TRUE),
+    `Min PPR`        = min(ppr, na.rm = TRUE),
+    `Max PPR`        = max(ppr, na.rm = TRUE),
+    `IQR PPR`        = IQR(ppr, na.rm = TRUE)
+  )
+
+kable(overall_summary, digits = 2, caption = "High-Level Market Summary (USD per Round)")
+```
+
+---
+
+## Price Comparison: Lead vs. Lead-Free
+
+```{r price-summary}
+lead_vs_free_summary <- ammo %>%
+  filter(!is.na(category), !is.na(caliber), !is.na(ppr)) %>%
+  group_by(caliber, category) %>%
+  summarise(
+    count      = n(),
+    median_ppr = median(ppr, na.rm = TRUE),
+    mean_ppr   = mean(ppr, na.rm = TRUE),
+    sd_ppr     = sd(ppr, na.rm = TRUE),
+    .groups    = "drop"
+  ) %>%
+  arrange(caliber, category)
+
+plot_data <- lead_vs_free_summary %>%
+  select(caliber, category, median_ppr) %>%
+  pivot_wider(names_from = category, values_from = median_ppr) %>%
+  rename(Lead_Core = `Lead-Core`, Lead_Free = `Lead-Free`) %>%
+  mutate(
+    premium = Lead_Free - Lead_Core,
+    caliber = reorder(caliber, Lead_Free)
+  )
+```
+
+### Median Pricing Dumbbell Chart
+
+```{r dumbbell-plot}
+p_dumbbell <- ggplot(plot_data) +
+  geom_segment(
+    aes(x = Lead_Core, xend = Lead_Free, y = caliber, yend = caliber),
+    color = "#a0a0a0", size = 1.2
+  ) +
+  geom_point(aes(x = Lead_Core, y = caliber, color = "Lead-Core"), size = 3) +
+  geom_point(aes(x = Lead_Free, y = caliber, color = "Lead-Free"), size = 3) +
+  geom_text(
+    aes(
+      x = pmax(Lead_Free, Lead_Core, na.rm = TRUE) + 0.1,
+      y = caliber,
+      label = ifelse(premium >= 0, sprintf("+$%.2f", premium), sprintf("-$%.2f", abs(premium)))
+    ),
+    hjust = 0, size = 3.5, color = "#2c3e50"
+  ) +
+  scale_color_manual(
+    name = "Ammunition Type",
+    values = c("Lead-Core" = "#2b5c8f", "Lead-Free" = "#d95f02")
+  ) +
+  scale_x_continuous(
+    labels = dollar_format(),
+    expand = expansion(mult = c(0.02, 0.12))
+  ) +
+  labs(
+    title = "Median Price per Round: Lead-Core vs. Lead-Free",
+    subtitle = "Comparing factory ammunition prices across common big game calibers",
+    x = "Median Price per Round (USD)",
+    y = NULL,
+    caption = "Source: Scraped Retail Ammunition Data From Major Colorado Retailers"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    legend.position = "top",
+    panel.grid.minor = element_blank(),
+    panel.grid.major.y = element_line(color = "#eeeeee", linetype = "dashed"),
+    plot.title = element_text(face = "bold", size = 14, hjust = 0.5),
+    plot.subtitle = element_text(hjust = 0.5),
+    axis.text.y = element_text(face = "bold", size = 9),
+    plot.caption = element_text(size = 8)
+  )
+
+p_dumbbell
+```
+
+### Price Table
+
+```{r price-table}
+formatted_table <- plot_data %>%
+  arrange(desc(Lead_Free)) %>%
+  mutate(
+    Lead_Core = sprintf("$%.2f", Lead_Core),
+    Lead_Free = sprintf("$%.2f", Lead_Free),
+    premium   = ifelse(premium >= 0, sprintf("+$%.2f", premium), sprintf("-$%.2f", abs(premium)))
+  ) %>%
+  rename(
+    Caliber = caliber,
+    `Lead-Core (\\$/rd)` = Lead_Core,
+    `Lead-Free (\\$/rd)` = Lead_Free,
+    `Lead-Free Premium` = premium
+  )
+
+kable(formatted_table, align = c("l", "r", "r", "r"), caption = "Ammunition Pricing Comparison by Caliber")
+```
+
+---
+
+## Market Availability & Distinct Offerings
+
+```{r deduplication}
+# Deduplicate on distinct products excluding target/bulk FMJ
+unique_ammo <- ammo %>%
+  filter(
+    !str_detect(coalesce(name, ""),  regex("FMJ|Full Metal", ignore_case = TRUE))
+  ) %>%
+  mutate(dedup_id = coalesce(upc, mpn, name)) %>%
+  distinct(dedup_id, .keep_all = TRUE)
+
+availability_data <- unique_ammo %>%
+  group_by(caliber, category) %>%
+  summarise(count = n(), .groups = "drop") %>%
+  group_by(caliber) %>%
+  mutate(total_count = sum(count)) %>%
+  ungroup() %>%
+  mutate(caliber = reorder(caliber, total_count))
+```
+
+### Overall Distinct Products Available
+
+```{r availability-plot}
+p_availability <- ggplot(availability_data, aes(x = count, y = caliber, fill = category)) +
+  geom_col(position = "stack", width = 0.7) +
+  geom_text(
+    aes(label = ifelse(count > 10, count, "")),
+    position = position_stack(vjust = 0.5),
+    color = "white",
+    fontface = "bold",
+    size = 3.5
+  ) +
+  scale_fill_manual(
+    name = "Ammunition Type",
+    values = c("Lead-Core" = "#2b5c8f", "Lead-Free" = "#d95f02")
+  ) +
+  scale_x_continuous(expand = expansion(mult = c(0, 0.05))) +
+  labs(
+    title = "Market Availability: Distinct Products by Caliber",
+    subtitle = "Unique hunting round product offerings (deduplicated by UPC/MPN/Name)",
+    x = "Distinct Products Available",
+    y = NULL,
+    caption = "Source: Scraped Retail Ammunition Data From Major Colorado Retailers"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    legend.position = "top",
+    panel.grid.minor = element_blank(),
+    panel.grid.major.y = element_blank(),
+    plot.title = element_text(face = "bold", size = 14),
+    axis.text.y = element_text(face = "bold")
+  )
+
+p_availability
+```
+
+---
+
+## Retailer-Level Availability
+
+This explores the depth of inventory per storefront: how many options a consumer actually finds on shelves or online per retailer.
+
+```{r retailer-availability-table}
+# Calculate distinct offerings available per retailer by caliber and composition
+retailer_caliber_counts <- ammo %>%
+  filter(!is.na(retailer), !is.na(caliber)) %>%
+  group_by(retailer, caliber, category) %>%
+  summarise(options_count = n(), .groups = "drop")
+
+# Average and median options carried across all retailers for each caliber
+retailer_benchmark <- retailer_caliber_counts %>%
+  group_by(caliber, category) %>%
+  summarise(
+    avg_options_per_retailer    = mean(options_count),
+    median_options_per_retailer = median(options_count),
+    retailers_stocking          = n(),
+    .groups = "drop"
+  ) %>%
+  arrange(caliber, category)
+
+kable(
+  retailer_benchmark,
+  digits = 1,
+  caption = "Average & Median Product Options Available Per Retailer"
+)
+```
+
+### Availability: Lead vs. Lead-Free by Retailer
+
+```{r retailer-breadth-plot, fig.height=7}
+# Focus on common big game calibers (e.g., 270 Win, 308 Win, 30-06, 6.5 Creedmoor)
+key_calibers <- c("270 Win", "308 Win", "30-06 Springfield", "6.5 Creedmoor", "300 Win Mag", "300 WSM", "243 Win", "7mm Rem Mag", "7mm-08 Rem")
+
+retailer_caliber_counts %>%
+  ggplot(aes(x = retailer, y = options_count, fill = category)) +
+  geom_col(position = position_dodge(preserve = "single"), width = 0.7) +
+  facet_wrap(~ caliber, scales = "free_y") +
+  scale_fill_manual(
+    name = "Ammunition Type",
+    values = c("Lead-Core" = "#2b5c8f", "Lead-Free" = "#d95f02")
+  ) +
+  labs(
+    title = "Distinct Product Selection by Retailer",
+    subtitle = "Number of hunting round options carried per retailer for primary big game calibers",
+    x = NULL,
+    y = "Number of Distinct Options",
+    caption = "Source: Scraped Retail Ammunition Data From Major Colorado Retailers"
+  ) +
+  theme_minimal(base_size = 11) +
+  theme(
+    legend.position = "top",
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    strip.text = element_text(face = "bold")
+  )
+```
+
+---
+
+## Price Distribution & Density Curves
+
+Overlaying density curves with transparency (`alpha = 0.45`) reveals price clustering, premium gaps, and distribution tails.
+
+```{r price-density-plot, fig.height=8}
+# Filter out extreme high-end outliers for cleaner visualization curves (e.g. ppr < $7.00)
+density_data <- ammo %>%
+  filter(
+    !is.na(category),
+    !is.na(ppr),
+    ppr > 0,
+    ppr <= 7.00,
+    caliber %in% key_calibers
+  )
+
+ggplot(density_data, aes(x = ppr, fill = category, color = category)) +
+  geom_density(alpha = 0.4, adjust = 1.2) +
+  facet_wrap(~ caliber, scales = "free_y", ncol = 2) +
+  scale_fill_manual(
+    name = "Ammunition Type",
+    values = c("Lead-Core" = "#2b5c8f", "Lead-Free" = "#d95f02")
+  ) +
+  scale_color_manual(
+    name = "Ammunition Type",
+    values = c("Lead-Core" = "#1e3f63", "Lead-Free" = "#a84900")
+  ) +
+  scale_x_continuous(labels = dollar_format()) +
+  labs(
+    title = "Price per Round Distribution by Caliber",
+    subtitle = "Overlay density curves comparing Lead-Core vs. Lead-Free factory loads",
+    x = "Price per Round (USD)",
+    y = "Density",
+    caption = "Source: Scraped Retail Ammunition Data From Major Colorado Retailers"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    legend.position = "top",
+    panel.grid.minor = element_blank(),
+    strip.text = element_text(face = "bold", size = 11),
+    plot.title = element_text(face = "bold", size = 14)
+  )
+```
+
+```{r box-whisker-plot, fig.height=8}
+library(scales)
+
+# Filter for target calibers and reasonable bounds
+boxplot_data <- ammo %>%
+  filter(
+    !is.na(category),
+    !is.na(ppr),
+    ppr > 0,
+    ppr <= 7.00,
+    caliber %in% key_calibers
+  )
+
+p_boxplot <- ggplot(boxplot_data, aes(x = caliber, y = ppr, fill = category)) +
+  # Raw data points showing inventory volume/depth
+  geom_point(
+    aes(color = category),
+    position = position_jitterdodge(jitter.width = 0.15, dodge.width = 0.75),
+    alpha = 0.25,
+    size = 1.2,
+    show.legend = FALSE
+  ) +
+  # Boxplot showing median, quartiles, and IQR
+  geom_boxplot(
+    width = 0.4,
+    position = position_dodge(0.75),
+    alpha = 0.6,
+    outlier.shape = NA # Outliers are already visible via geom_point
+  ) +
+  scale_fill_manual(
+    name = "Ammunition Type",
+    values = c("Lead-Core" = "#2b5c8f", "Lead-Free" = "#d95f02")
+  ) +
+  scale_color_manual(
+    values = c("Lead-Core" = "#2b5c8f", "Lead-Free" = "#d95f02")
+  ) +
+  scale_y_continuous(labels = dollar_format()) +
+  coord_flip() + # Flip horizontal for legible caliber labels
+  labs(
+    title = "Price per Round Distribution by Caliber",
+    subtitle = "Comparing medians, interquartile ranges (IQR), and product spreads",
+    x = NULL,
+    y = "Price per Round (USD)",
+    caption = "Source: Scraped Retail Ammunition Data From Major Colorado Retailers"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    legend.position = "top",
+    panel.grid.minor = element_blank(),
+    panel.grid.major.y = element_blank(),
+    plot.title = element_text(face = "bold", size = 14),
+    axis.text.y = element_text(face = "bold")
+  )
+
+p_boxplot
+```
+

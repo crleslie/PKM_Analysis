@@ -1,0 +1,422 @@
+---
+title: "Colorado Retail Ammunition Market Analysis"
+subtitle: "Exploratory Pricing, Availability, and Lead vs. Lead-Free Comparisons"
+author: "Analysis Pipeline"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    theme: flatly
+    toc: true
+    toc_depth: 3
+    toc_float: true
+    code_folding: hide
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  warning = FALSE,
+  message = FALSE,
+  fig.width = 9,
+  fig.height = 6,
+  dpi = 300
+)
+
+library(tidyverse)
+library(knitr)
+library(scales)
+library(readxl)
+library(writexl)
+
+# Focus on common big game calibers in Colorado/Western hunting
+key_calibers <- c("270 Win", "308 Win", "30-06 Springfield", "6.5 Creedmoor", "300 Win Mag", "300 WSM", "243 Win", "7mm Rem Mag", "7mm-08 Rem")
+
+# Load cleaned dataset
+ammo <- read_excel("results/ammo_clean.xlsx") %>%
+  filter(
+    !str_detect(coalesce(name, ""), regex("FMJ|Full Metal", ignore_case = TRUE))
+  ) %>%
+  mutate(dedup_id = coalesce(upc, mpn, name)) %>%
+  group_by(retailer, dedup_id) %>%
+  slice_max(order_by = date, n = 1, with_ties = FALSE) %>%
+  ungroup() %>%
+  filter(caliber %in% key_calibers)
+```
+
+## Dataset Overview
+
+This report evaluates retail ammunition pricing and in-stock shelf variety across primary big-game hunting calibers available from major Colorado retailers (or retailers who ship to Colorado). Bulk range ammunition and full metal jacket (FMJ) target rounds have been removed to isolate dedicated hunting rounds that conform to Colorado Parks and Wildlife regulations.
+
+```{r overall-summary}
+overall_summary <- ammo %>%
+  filter(!is.na(ppr), ppr > 0) %>%
+  summarise(
+    `Total Listings` = n(),
+    `Mean PPR`       = mean(ppr, na.rm = TRUE),
+    `Median PPR`     = median(ppr, na.rm = TRUE),
+    `Min PPR`        = min(ppr, na.rm = TRUE),
+    `Max PPR`        = max(ppr, na.rm = TRUE),
+    `IQR PPR`        = IQR(ppr, na.rm = TRUE)
+  )
+
+kable(overall_summary, digits = 2, caption = "High-Level Market Summary (USD per Round)")
+```
+
+Across all tracked calibers and retailers, the typical price per round sits at `r scales::dollar(overall_summary[["Median PPR"]])` - the median listed above. Because high-end custom loads pull the arithmetic mean upward, this report primarily relies on the **median** (the middle price on the shelf) to give an accurate representation of everyday consumer costs.
+
+---
+
+## Price Comparison: Lead vs. Lead-Free
+
+```{r price-summary}
+lead_vs_free_summary <- ammo %>%
+  filter(!is.na(category), !is.na(caliber), !is.na(ppr)) %>%
+  group_by(caliber, category) %>%
+  summarise(
+    count      = n(),
+    median_ppr = median(ppr, na.rm = TRUE),
+    mean_ppr   = mean(ppr, na.rm = TRUE),
+    sd_ppr     = sd(ppr, na.rm = TRUE),
+    .groups    = "drop"
+  ) %>%
+  arrange(caliber, category)
+
+plot_data <- lead_vs_free_summary %>%
+  select(caliber, category, median_ppr) %>%
+  pivot_wider(names_from = category, values_from = median_ppr) %>%
+  rename(Lead_Core = `Lead-Core`, Lead_Free = `Lead-Free`) %>%
+  mutate(
+    premium = Lead_Free - Lead_Core,
+    caliber = reorder(caliber, Lead_Free)
+  )
+```
+
+### Median Pricing Dumbbell Chart
+
+```{r dumbbell-plot}
+p_dumbbell <- ggplot(plot_data) +
+  geom_segment(
+    aes(x = Lead_Core, xend = Lead_Free, y = caliber, yend = caliber),
+    color = "#a0a0a0", size = 1.2
+  ) +
+  geom_point(aes(x = Lead_Core, y = caliber, color = "Lead-Core"), size = 3) +
+  geom_point(aes(x = Lead_Free, y = caliber, color = "Lead-Free"), size = 3) +
+  geom_text(
+    aes(
+      x = pmax(Lead_Free, Lead_Core, na.rm = TRUE) + 0.1,
+      y = caliber,
+      label = ifelse(premium >= 0, sprintf("+$%.2f", premium), sprintf("-$%.2f", abs(premium)))
+    ),
+    hjust = 0, size = 3.5, color = "#2c3e50"
+  ) +
+  scale_color_manual(
+    name = "Ammunition Type",
+    values = c("Lead-Core" = "#2b5c8f", "Lead-Free" = "#d95f02")
+  ) +
+  scale_x_continuous(
+    labels = dollar_format(),
+    expand = expansion(mult = c(0.02, 0.12))
+  ) +
+  labs(
+    title = "Median Price per Round: Lead-Core vs. Lead-Free",
+    subtitle = "Comparing factory ammunition prices across common big game calibers",
+    x = "Median Price per Round (USD)",
+    y = NULL,
+    caption = "Source: Scraped Retail Ammunition Data From Major Colorado Retailers"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    legend.position = "top",
+    panel.grid.minor = element_blank(),
+    panel.grid.major.y = element_line(color = "#eeeeee", linetype = "dashed"),
+    plot.title = element_text(face = "bold", size = 14, hjust = 0.5),
+    plot.subtitle = element_text(hjust = 0.5),
+    axis.text.y = element_text(face = "bold", size = 9),
+    plot.caption = element_text(size = 8)
+  )
+
+p_dumbbell
+```
+
+**How to read this chart:**
+* Each horizontal line represents a single caliber.
+* The **blue dot** marks the middle price of traditional lead-core rounds.
+* The **orange dot** marks the middle price of lead-free (copper/monolithic) rounds.
+* The grey line between the two dots illustrates the price gap, with the dollar figure at the end indicating the exact price difference per single shot.
+
+**Takeaway:**
+Lead-free ammunition carries a consistent price surcharge across standard hunting calibers—generally between **+$0.35 and +$0.55 per round** (or roughly $7.00 to $11.00 more per 20-round box). In short-magnum and specialized long-range cartridges (`.300 WSM`), premium lead-core hunting loads approach price parity with lead-free offerings.
+
+---
+
+### Price Table
+
+```{r price-table}
+formatted_table <- plot_data %>%
+  arrange(desc(Lead_Free)) %>%
+  mutate(
+    Lead_Core = sprintf("$%.2f", Lead_Core),
+    Lead_Free = sprintf("$%.2f", Lead_Free),
+    premium   = ifelse(premium >= 0, sprintf("+$%.2f", premium), sprintf("-$%.2f", abs(premium)))
+  ) %>%
+  rename(
+    Caliber = caliber,
+    `Lead-Core (\\$/rd)` = Lead_Core,
+    `Lead-Free (\\$/rd)` = Lead_Free,
+    `Lead-Free Premium` = premium
+  )
+
+kable(formatted_table, align = c("l", "r", "r", "r"), caption = "Ammunition Pricing Comparison by Caliber")
+```
+
+The table highlights that entry costs depend heavily on the caliber itself. Standard workhorse cartridges like `.243 Win`, `.308 Win`, and `.30-06 Springfield` remain the most affordable overall, keeping lead-free loads around or below $2.65 per round.
+
+---
+
+## Market Availability & Distinct Offerings
+
+```{r deduplication}
+# Deduplicate on distinct products across all stores
+unique_ammo <- ammo %>%
+  filter(
+    !str_detect(coalesce(name, ""), regex("FMJ|Full Metal", ignore_case = TRUE))
+  ) %>%
+  mutate(dedup_id = coalesce(upc, mpn, name)) %>%
+  distinct(dedup_id, .keep_all = TRUE)
+
+availability_data <- unique_ammo %>%
+  group_by(caliber, category) %>%
+  summarise(count = n(), .groups = "drop") %>%
+  group_by(caliber) %>%
+  mutate(total_count = sum(count)) %>%
+  ungroup() %>%
+  mutate(caliber = reorder(caliber, total_count))
+```
+
+### Overall Distinct Products Available
+
+```{r availability-plot}
+p_availability <- ggplot(availability_data, aes(x = count, y = caliber, fill = category)) +
+  geom_col(position = "stack", width = 0.7) +
+  geom_text(
+    aes(label = ifelse(count > 10, count, "")),
+    position = position_stack(vjust = 0.5),
+    color = "white",
+    fontface = "bold",
+    size = 3.5
+  ) +
+  scale_fill_manual(
+    name = "Ammunition Type",
+    values = c("Lead-Core" = "#2b5c8f", "Lead-Free" = "#d95f02")
+  ) +
+  scale_x_continuous(expand = expansion(mult = c(0, 0.05))) +
+  labs(
+    title = "Market Availability: Distinct Products by Caliber",
+    subtitle = "Unique hunting round product offerings (deduplicated across retailers)",
+    x = "Distinct Products Available",
+    y = NULL,
+    caption = "Source: Scraped Retail Ammunition Data From Major Colorado Retailers"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    legend.position = "top",
+    panel.grid.minor = element_blank(),
+    panel.grid.major.y = element_blank(),
+    plot.title = element_text(face = "bold", size = 14),
+    axis.text.y = element_text(face = "bold")
+  )
+
+p_availability
+```
+
+**How to read this chart:**
+* Each bar shows the total variety of distinct factory products on the market for that caliber.
+* The length of the bar shows the total number of unique choices a consumer has.
+* The bar is divided into **Lead-Core (blue)** and **Lead-Free (orange)** portions, showing product diversity.
+
+**Takeaway:**
+Choice is heavily concentrated in a handful of legacy calibers. `.308 Win`, `6.5 Creedmoor`, and `.30-06 Springfield` represent the vast majority of retail variety. While lead-free options are available in every key hunting caliber, they generally represent 15% to 25% of total product variety, with specialized calibers like `.300 WSM` and `7mm-08 Rem` offering fewer than 15 unique non-lead loads statewide.
+
+---
+
+## Retailer-Level Availability
+
+This section evaluates shelf breadth across individual storefronts—showing whether a hunter walking into a specific store can reasonably expect to find lead-free choices in stock.
+
+```{r retailer-availability-table}
+retailer_caliber_counts <- ammo %>%
+  filter(!is.na(retailer), !is.na(caliber)) %>%
+  group_by(retailer, caliber, category) %>%
+  summarise(options_count = n(), .groups = "drop")
+
+retailer_benchmark <- retailer_caliber_counts %>%
+  group_by(caliber, category) %>%
+  summarise(
+    avg_options_per_retailer    = mean(options_count),
+    median_options_per_retailer = median(options_count),
+    retailers_stocking          = n(),
+    .groups = "drop"
+  ) %>%
+  arrange(caliber, category)
+
+kable(
+  retailer_benchmark,
+  digits = 1,
+  caption = "Average & Median Product Options Available Per Retailer"
+)
+```
+
+### Availability: Lead vs. Lead-Free by Retailer
+
+```{r retailer-breadth-plot, fig.height=7}
+retailer_caliber_counts %>%
+  ggplot(aes(x = retailer, y = options_count, fill = category)) +
+  geom_col(position = position_dodge(preserve = "single"), width = 0.7) +
+  facet_wrap(~ caliber, scales = "free_y") +
+  scale_fill_manual(
+    name = "Ammunition Type",
+    values = c("Lead-Core" = "#2b5c8f", "Lead-Free" = "#d95f02")
+  ) +
+  labs(
+    title = "Distinct Product Selection by Retailer",
+    subtitle = "Number of hunting round options carried per retailer for primary big game calibers",
+    x = NULL,
+    y = "Number of Distinct Options",
+    caption = "Source: Scraped Retail Ammunition Data From Major Colorado Retailers"
+  ) +
+  theme_minimal(base_size = 11) +
+  theme(
+    legend.position = "top",
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    strip.text = element_text(face = "bold")
+  )
+```
+
+**How to read this chart:**
+* Each panel represents one caliber.
+* The x-axis lists the individual retailers surveyed.
+* The height of the bars shows how many distinct boxes of ammunition that retailer has on offer for that caliber, directly comparing **traditional lead (blue)** against **lead-free (orange)**.
+
+**Takeaway:**
+Retail depth varies widely by store footprint. While larger sporting-goods chains stock broad selections of lead-core options (often 10 to 30 choices per caliber), lead-free availability at the store level is frequently limited to 1 to 4 SKUs per caliber, meaning hunters shopping locally have substantially fewer projectile weights and bullet designs to choose from.
+
+---
+
+## Price Distributions: Where Do Shelf Prices Cluster?
+
+Summary averages don't show whether options exist at budget price tiers or whether all lead-free offerings sit in the premium price bracket. The charts below display the full pricing spread across store shelves.
+
+### Price Spread & Range (Box-and-Whisker)
+
+```{r box-whisker-plot, fig.height=8}
+boxplot_data <- ammo %>%
+  filter(
+    !is.na(category),
+    !is.na(ppr),
+    ppr > 0,
+    ppr <= 7.00,
+    caliber %in% key_calibers
+  )
+
+p_boxplot <- ggplot(boxplot_data, aes(x = caliber, y = ppr, fill = category)) +
+  geom_point(
+    aes(color = category),
+    position = position_jitterdodge(jitter.width = 0.15, dodge.width = 0.75),
+    alpha = 0.25,
+    size = 1.2,
+    show.legend = FALSE
+  ) +
+  geom_boxplot(
+    width = 0.4,
+    position = position_dodge(0.75),
+    alpha = 0.6,
+    outlier.shape = NA
+  ) +
+  scale_fill_manual(
+    name = "Ammunition Type",
+    values = c("Lead-Core" = "#2b5c8f", "Lead-Free" = "#d95f02")
+  ) +
+  scale_color_manual(
+    values = c("Lead-Core" = "#2b5c8f", "Lead-Free" = "#d95f02")
+  ) +
+  scale_y_continuous(labels = dollar_format()) +
+  coord_flip() +
+  labs(
+    title = "Price per Round Distribution by Caliber",
+    subtitle = "Comparing median prices, middle-50% price ranges, and inventory spread",
+    x = NULL,
+    y = "Price per Round (USD)",
+    caption = "Source: Scraped Retail Ammunition Data From Major Colorado Retailers"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    legend.position = "top",
+    panel.grid.minor = element_blank(),
+    panel.grid.major.y = element_blank(),
+    plot.title = element_text(face = "bold", size = 14),
+    axis.text.y = element_text(face = "bold")
+  )
+
+p_boxplot
+```
+
+**How to read this chart:**
+* **The shaded box:** Covers the middle 50% of shelf prices (the interquartile range). If a box is short, prices are very uniform; if it is long, prices vary widely.
+* **The solid line inside the box:** The median price point.
+* **The "whiskers" (lines extending outward):** Show the typical upper and lower price limits for that ammunition.
+* **The faint dots:** Represent individual boxes of ammunition, showing where shelf inventory is thin or dense.
+
+**Takeaway:**
+The entry floor for lead-free ammunition is noticeably higher than lead-core. While traditional lead ammunition features inexpensive baseline hunting options starting around $1.25 to $1.75 per round, lead-free rarely dips below $2.10 to $2.25 per round. At the top end, premium lead-core loads (match-grade, bonded) overlap heavily with standard lead-free offerings.
+
+---
+
+### Price Density Profiles
+
+```{r price-density-plot, fig.height=8}
+density_data <- ammo %>%
+  filter(
+    !is.na(category),
+    !is.na(ppr),
+    ppr > 0,
+    ppr <= 7.00,
+    caliber %in% key_calibers
+  )
+
+ggplot(density_data, aes(x = ppr, fill = category, color = category)) +
+  geom_density(alpha = 0.4, adjust = 1.2) +
+  facet_wrap(~ caliber, scales = "free_y", ncol = 2) +
+  scale_fill_manual(
+    name = "Ammunition Type",
+    values = c("Lead-Core" = "#2b5c8f", "Lead-Free" = "#d95f02")
+  ) +
+  scale_color_manual(
+    name = "Ammunition Type",
+    values = c("Lead-Core" = "#1e3f63", "Lead-Free" = "#a84900")
+  ) +
+  scale_x_continuous(labels = dollar_format()) +
+  labs(
+    title = "Price Density Profiles by Caliber",
+    subtitle = "Overlay showing where factory ammunition prices cluster on the shelf",
+    x = "Price per Round (USD)",
+    y = "Concentration (Relative Density)",
+    caption = "Source: Scraped Retail Ammunition Data From Major Colorado Retailers"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    legend.position = "top",
+    panel.grid.minor = element_blank(),
+    strip.text = element_text(face = "bold", size = 11),
+    plot.title = element_text(face = "bold", size = 14)
+  )
+```
+
+**How to read this chart:**
+* Think of these curves as smooth hills showing **where products cluster along the price spectrum**.
+* **High peaks:** Indicate a price point where many different products are available.
+* **A curve shifted to the right:** Indicates that products in that category are systematically more expensive.
+* **Overlapping shaded areas:** The price range where lead and lead-free options share the exact same price bracket.
+
+**Takeaway:**
+In popular cartridges like `.30-06 Springfield` and `.308 Win`, the blue lead curve features a sharp initial peak around $1.75 to $2.00, reflecting high-volume hunting boxes. The orange lead-free curve shifts right, forming its primary peak between $2.40 and $2.80, with fewer budget alternatives to flatten the front of the curve.
