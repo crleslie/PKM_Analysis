@@ -3,9 +3,6 @@ title: "Colorado Retail Ammunition Market Analysis"
 author: "Colorado Lead Free Analysis Team"
 date: "`r Sys.Date()`"
 output:
-  pdf_document:
-    toc: true
-    toc_depth: '3'
   html_document:
     theme: flatly
     toc: true
@@ -13,6 +10,9 @@ output:
     toc_float: true
     code_folding: hide
     df_print: paged
+  pdf_document:
+    toc: true
+    toc_depth: '3'
 subtitle: "Exploratory Pricing, Availability, and Lead vs. Lead-Free Comparisons"
 editor_options:
   markdown:
@@ -43,7 +43,15 @@ ammo <- read_excel("results/ammo_clean.xlsx") %>%
   filter(
     !str_detect(coalesce(name, ""), regex("FMJ|Full Metal", ignore_case = TRUE))
   ) %>%
-  mutate(dedup_id = coalesce(upc, mpn, name)) %>%
+  # 1. Unify Bass Pro and Cabela's
+  mutate(
+    retailer = case_when(
+      str_detect(retailer, regex("Bass\\s*Pro|Cabela'?s", ignore_case = TRUE)) ~ "Cabelas/Basspro",
+      TRUE ~ retailer
+    ),
+    dedup_id = coalesce(upc, mpn, name)
+  ) %>%
+  # 2. Deduplicate by the newly combined retailer entity and product ID
   group_by(retailer, dedup_id) %>%
   slice_max(order_by = date, n = 1, with_ties = FALSE) %>%
   ungroup() %>%
@@ -279,6 +287,14 @@ retailer_benchmark <- retailer_caliber_counts %>%
 kable(
   retailer_benchmark,
   digits = 1,
+  col.names = c(
+    "Caliber",
+    "Bullet Category",
+    "Avg Options / Store",
+    "Median Options / Store",
+    "Stocking Retailers"
+  ),
+  align = c("l", "l", "r", "r", "r"),
   caption = "Average & Median Product Options Available Per Retailer"
 )
 ```
