@@ -69,7 +69,7 @@ ammo <- read_excel("results/ammo_clean.xlsx") %>%
 
 ### Deduplication & Standardization
 * **Product-Level Identity:** Individual listings were deduplicated across retailers using Universal Product Codes (UPC) and Manufacturer Part Numbers (MPN), falling back to title matching where identifiers were unlisted.
-* **Temporal Freshness:** For retailers with repeat scrapes over time, only the most recent observed price per product was retained.
+* **Temporal Recency:** For retailers with repeat scrapes over time, only the most recent observed price per product was retained.
 * **Pricing Unit:** All costs reflect factory loaded ammunition normalized to Price Per Round (USD/rd). Box counts (20-round standard hunting boxes vs. 50-round packages) were standardized by dividing total box price by box quantity prior to aggregation.
 
 ## Dataset Overview
