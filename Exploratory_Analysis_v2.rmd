@@ -89,7 +89,7 @@ overall_summary <- ammo %>%
 kable(overall_summary, digits = 2, caption = "High-Level Market Summary (USD per Round)")
 ```
 
-Across all tracked calibers and retailers, the typical price per round sits at `r scales::dollar(overall_summary[["Median PPR"]])` - the median listed above. Because high-end rounds can pull the arithmetic mean upward, this report primarily relies on the **median** (the middle price on the shelf) to represent where everyday consumer costs likely sit.
+Across all tracked calibers and retailers, the typical price per round sits at `r scales::dollar(overall_summary[["Median PPR"]])` - the median listed above. Because high-end rounds can pull the arithmetic mean upward, this report primarily relies on the **median** (the middle price on the shelf/online) to represent where everyday consumer costs likely sit.
 
 ## Price Comparison: Lead vs. Lead-Free
 
@@ -195,7 +195,7 @@ kable(
   formatted_table,
   align = c("l", "r", "r", "r"),
   longtable = FALSE,
-  caption = "Ammunition Pricing Comparison by Caliber")
+  caption = "Median Ammunition Pricing Comparison by Caliber")
 ```
 
 The table highlights that entry costs depend heavily on the caliber itself. Historically popular cartridges like .243 Win, .308 Win, .270 and .30-06 Springfield - as well as more recent offerings including 6.5 Creedmoor - remain the most affordable overall, with the median price of lead-free loads around $2.50 per round.
@@ -333,23 +333,36 @@ retailer_caliber_counts %>%
 
 **Takeaway:** Retail depth varies widely. While larger sporting-goods chains and online-retailers stock broad selections of lead-core options (often 10 to 30 choices per caliber), lead-free availability at the store level is frequently limited to 1 to 4 SKUs per caliber, meaning hunters shopping locally have substantially fewer projectile weights and bullet designs to choose from.
 
-## Price Distributions: Where Do Shelf Prices Cluster?
+---
 
-Summary averages don't show whether options exist at budget price tiers or whether all lead-free offerings sit in the premium price bracket. The charts below display the full pricing spread across retailers.
+## Price Distributions: Where Do Retail Prices Cluster?
 
-### Price Spread & Range (Box-and-Whisker)
+Summary averages don't show whether options exist at budget price tiers or whether all lead-free offerings sit exclusively in the premium price bracket. The charts below display the pricing spread across distinct market offerings, using unique products with price averaged across retailers.
 
-```{r box-whisker-plot, fig.height=8}
-boxplot_data <- ammo %>%
+```{r prep-product-level-data}
+# Summarize each unique product across retailers to its average market price
+product_level_ammo <- ammo %>%
   filter(
     !is.na(category),
     !is.na(ppr),
     ppr > 0,
     ppr <= 7.00,
     caliber %in% key_calibers
+  ) %>%
+  group_by(dedup_id, caliber, category) %>%
+  summarise(
+    avg_ppr      = mean(ppr, na.rm = TRUE),
+    median_ppr   = median(ppr, na.rm = TRUE),
+    stores_count = n(),
+    .groups      = "drop"
   )
 
-p_boxplot <- ggplot(boxplot_data, aes(x = caliber, y = ppr, fill = category)) +
+```
+
+### Price Spread & Range (Box-and-Whisker)
+
+```{r box-whisker-plot, fig.height=8}
+p_boxplot <- ggplot(product_level_ammo, aes(x = caliber, y = avg_ppr, fill = category)) +
   geom_point(
     aes(color = category),
     position = position_jitterdodge(jitter.width = 0.15, dodge.width = 0.75),
@@ -376,7 +389,7 @@ p_boxplot <- ggplot(boxplot_data, aes(x = caliber, y = ppr, fill = category)) +
     title = "Price per Round Distribution by Caliber",
     subtitle = "Comparing median prices, middle-50% price ranges, and inventory spread",
     x = NULL,
-    y = "Price per Round (USD)",
+    y = "Average Price per Round (USD)",
     caption = "Source: Scraped Retail Ammunition Data From Major Colorado Retailers"
   ) +
   theme_minimal(base_size = 12) +
@@ -389,31 +402,32 @@ p_boxplot <- ggplot(boxplot_data, aes(x = caliber, y = ppr, fill = category)) +
   )
 
 p_boxplot
+
 ```
 
 **How to read this chart:**
 
-- **The shaded box:** Covers the middle 50% of ammo prices (the interquartile range). If a box is short, prices are very uniform; if it is long, prices vary widely.
-- **The solid line inside the box:** The median price point.
-- **The "whiskers" (lines extending outward):** Show the typical upper and lower price limits for that ammunition.
-- **The faint dots:** Represent individual boxes of ammunition, showing where retailer inventory is thin or dense.
+* **The shaded box:** Covers the middle 50% of shelf prices (the interquartile range). A shorter box means prices are clustered tightly; a taller box indicates a wide spread from budget to premium.
+* **The solid line inside the box:** The median price point.
+* **The "whiskers" (lines extending outward):** Show the typical upper and lower price limits for that ammunition type.
+* **The faint dots:** Represent individual factory products, showing market depth and catalog variety.
 
-**Takeaway:** The entry price for lead-free ammunition is noticeably higher than lead-core. While traditional lead ammunition features inexpensive baseline hunting options starting around \$1.25 to \$1.75 per round, lead-free rarely dips below \$2.10 to \$2.25 per round. At the top end, premium lead-core loads (tipped, bonded, high BC) overlap heavily with standard lead-free offerings.
+**Takeaway:** Across every tracked caliber, lead-free ammunition carries a consistent price premium, ranging from **+$0.17 to +$0.50 per round** (roughly $3.40 to $10.00 more per 20-round box). 
 
-### Price Density Profiles
+Standard hunting cartridges see the largest relative surcharges: workhorse calibers like .30-06 Springfield (+$0.45), .308 Win (+$0.44), and 7mm-08 Rem (+$0.50) require an additional $0.35 to $0.50 per shot to transition to lead-free alternatives. Conversely, magnum cartridges (.300 Win Mag at +$0.17, 7mm Rem Mag and .300 WSM at +$0.25) display the narrowest premiums, as baseline factory lead loads in these calibers already carry premium price points above $2.90 per round. Overall, baseline lead-free options enter the market around $2.35 to $2.55 per round, whereas standard lead-core hunting options remain widely available near or below $2.10.
 
-```{r price-density-plot, fig.height=8}
-density_data <- ammo %>%
-  filter(
-    !is.na(category),
-    !is.na(ppr),
-    ppr > 0,
-    ppr <= 7.00,
-    caliber %in% key_calibers
-  )
+---
 
-ggplot(density_data, aes(x = ppr, fill = category, color = category)) +
-  geom_density(alpha = 0.4, adjust = 1.2) +
+### Price Histograms
+
+```{r price-histogram-plot, fig.height=8}
+ggplot(product_level_ammo, aes(x = avg_ppr, fill = category, color = category)) +
+  geom_histogram(
+    position = "identity",
+    binwidth = 0.20,
+    alpha = 0.45,
+    boundary = 0
+  ) +
   facet_wrap(~ caliber, scales = "free_y", ncol = 2) +
   scale_fill_manual(
     name = "Ammunition Type",
@@ -423,12 +437,15 @@ ggplot(density_data, aes(x = ppr, fill = category, color = category)) +
     name = "Ammunition Type",
     values = c("Lead-Core" = "#1e3f63", "Lead-Free" = "#a84900")
   ) +
-  scale_x_continuous(labels = dollar_format()) +
+  scale_x_continuous(
+    labels = scales::dollar_format(),
+    breaks = seq(1, 7, by = 1)
+  ) +
   labs(
-    title = "Price Density Profiles by Caliber",
-    subtitle = "Overlay showing where factory ammunition prices cluster on the shelf",
-    x = "Price per Round (USD)",
-    y = "Concentration (Relative Density)",
+    title = "Price per Round Distribution by Caliber",
+    subtitle = "Overlay histograms showing distinct product counts in $0.20 price brackets",
+    x = "Average Price per Round (USD)",
+    y = "Number of Distinct Products",
     caption = "Source: Scraped Retail Ammunition Data From Major Colorado Retailers"
   ) +
   theme_minimal(base_size = 12) +
@@ -438,13 +455,65 @@ ggplot(density_data, aes(x = ppr, fill = category, color = category)) +
     strip.text = element_text(face = "bold", size = 11),
     plot.title = element_text(face = "bold", size = 14)
   )
+
 ```
 
-**How to read this chart:** 
+**How to read this chart:**
 
-* Think of these curves as smooth hills showing **where products cluster along the price spectrum**.
-* **High peaks:** Indicate a price point where many different products are available.
-* **A curve shifted to the right:** Indicates that products in that category are systematically more expensive.
-* **Overlapping shaded areas:** The price range where lead and lead-free options share the same price bracket.
+* Each bar stacks counts of distinct products into **$0.20 price brackets** (e.g., $2.00–$2.20, $2.20–$2.40).
+* The **vertical height** shows how many unique ammunition choices - with price averaged across retailers - fall into that specific price window.
+* **Overlapping colors (orange/brown tones):** Show price tiers where both lead-core and lead-free options share price brackets.
 
-**Takeaway:** Cartridges like .308 Win and 6.5 Creedmoor share a notable overlap under their curves, indicating that there are many lead-core and lead-free options sharing that price range. However, all calibers indicate that lead-free option are shifted toward an overall higher price per round. 
+**Takeaway:** Lead-core options dominate product counts at lower price tiers (between $1.60 and $2.20), creating a tall blue wall of budget-friendly choices. Lead-free bars (orange) sit noticeably further to the right and remain comparatively low in height, showing both an elevated starting price and fewer total options to choose from.
+
+---
+
+### Count-Scaled Smooth Price Curves
+
+```{r price-histogram-smoothed-plot, fig.height=8}
+ggplot(product_level_ammo, aes(x = avg_ppr, fill = category, color = category)) +
+  geom_density(
+    aes(y = after_stat(count)),
+    alpha = 0.45,
+    adjust = 1.2
+  ) +
+  facet_wrap(~ caliber, scales = "free_y", ncol = 2) +
+  scale_fill_manual(
+    name = "Ammunition Type",
+    values = c("Lead-Core" = "#2b5c8f", "Lead-Free" = "#d95f02")
+  ) +
+  scale_color_manual(
+    name = "Ammunition Type",
+    values = c("Lead-Core" = "#1e3f63", "Lead-Free" = "#a84900")
+  ) +
+  scale_x_continuous(
+    labels = scales::dollar_format(),
+    breaks = seq(1, 7, by = 1)
+  ) +
+  labs(
+    title = "Smoothed Market Volume Profiles by Caliber",
+    subtitle = "Continuous price profiles scaled to unique product counts",
+    x = "Average Price per Round (USD)",
+    y = "Relative Volume of Offerings",
+    caption = "Source: Scraped Retail Ammunition Data From Major Colorado Retailers"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    legend.position = "top",
+    panel.grid.minor = element_blank(),
+    strip.text = element_text(face = "bold", size = 11),
+    plot.title = element_text(face = "bold", size = 14)
+  )
+
+```
+
+**How to read this chart:**
+
+* Unlike standard density curves, these smoothed graphc are scaled to **actual product counts** rather than normalized percentages.
+* **Peak Height:** Marks where options are most concentrated along the price spectrum. Rather than grouping prices into rigid 20-cent blocks (like a histogram), the curve reflects a continuous, rolling concentration across the data, with the tallest crest showing the price neighborhood where choices are most abundant.
+* **Total Area Under the Curve:** Directly represents total market availability—a taller, wider blue curve demonstrates how much more variety exists for lead-core rounds compared to the lower orange lead-free curve.
+* **Rightward Offset:** Highlights the price gap between the most common lead price point (blue peak) and the most common lead-free price point (orange peak).
+
+**Takeaway:** This profile shows the dual challenge currently facing consumers: lead-free ammunition is both shifted toward a higher baseline price and represented by a much smaller total volume of options across nearly all calibers.
+
+
