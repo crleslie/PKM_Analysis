@@ -34,12 +34,14 @@ library(knitr)
 library(scales)
 library(readxl)
 library(writexl)
+library(kableExtra)
+library(formattable)
 
 # Focus on common big game calibers in Colorado/Western hunting
 key_calibers <- c("270 Win", "308 Win", "30-06 Springfield", "6.5 Creedmoor", "300 Win Mag", "300 WSM", "243 Win", "7mm Rem Mag", "7mm-08 Rem")
 
 # Load cleaned dataset
-ammo <- read_excel("results/ammo_clean.xlsx") %>%
+ammo <- readRDS("results/ammo_clean.rds") %>%
   filter(
     !str_detect(coalesce(name, ""), regex("FMJ|Full Metal", ignore_case = TRUE))
   ) %>%
@@ -64,6 +66,7 @@ ammo <- read_excel("results/ammo_clean.xlsx") %>%
 
 ### Data Collection & Scope
 * **Data Sources:** Pricing and catalog data were aggregated across major brick-and-mortar storefronts in Colorado and online retailers shipping directly into the state.
+* **Date Range:** Data were collected between `r min(ammo$date)` and `r max(ammo$date)`.
 * **Regulation Alignment:** Full Metal Jacket (FMJ), match target ammunition, and solid non-expanding target rounds were filtered out to reflect projectiles legally permitted for big-game harvest under Colorado Parks and Wildlife (CPW) regulations (expanding/mushrooming bullets only).
 * **Caliber Focus:** Analysis is restricted to a sampling of popular Colorado big-game centerfire rifle calibers, excluding rimfire, pistol cartridges, and bulk military-surplus chamberings.
 
@@ -269,43 +272,88 @@ p_availability
 This section evaluates availability across individual storefronts - showing whether a hunter walking into a specific store or ordering from a specific retailer can reasonably expect to find lead-free choices.
 
 ```{r retailer-availability-table}
-retailer_caliber_counts <- ammo %>%
-  filter(!is.na(retailer), !is.na(caliber)) %>%
-  group_by(retailer, caliber, category) %>%
-  summarise(options_count = n(), .groups = "drop")
-
-retailer_benchmark <- retailer_caliber_counts %>%
-  group_by(caliber, category) %>%
+retailer_caliber_summary <- ammo %>%
+  filter(!is.na(retailer), !is.na(caliber), !is.na(category), !is.na(ppr), ppr > 0) %>%
+  group_by(caliber, retailer, category) %>%
   summarise(
-    avg_options_per_retailer    = mean(options_count),
-    median_options_per_retailer = median(options_count),
-    retailers_stocking          = n(),
+    count  = n(),
+    min    = min(ppr, na.rm = TRUE),
+    median = median(ppr, na.rm = TRUE),
+    max    = max(ppr, na.rm = TRUE),
     .groups = "drop"
   ) %>%
-  arrange(caliber, category)
+  mutate(category = ifelse(category == "Lead-Core", "lc", "lf")) %>%
+  pivot_wider(
+    names_from = category,
+    values_from = c(count, min, median, max),
+    names_glue = "{category}_{.value}"
+  ) %>%
+  mutate(
+    lc_count    = coalesce(lc_count, 0L),
+    lf_count    = coalesce(lf_count, 0L),
+    total_count = lc_count + lf_count
+  ) %>%
+  arrange(caliber, retailer) %>%
+  mutate(caliber = factor(caliber, levels = unique(caliber)))
+
+# Determine a single global ceiling for all count bars
+global_max <- max(retailer_caliber_summary$total_count, na.rm = TRUE)
+
+# Build bar helper directly in cell_spec or clean inline CSS
+bar_cell <- function(x, color, max_val = global_max, max_px = 80) {
+  w_px <- pmax(round(max_px * (x / max_val)), 2)
+  sprintf(
+    '<div style="display:inline-flex; align-items:center; gap:6px;"><span style="display:inline-block; width:24px; text-align:left;">%d</span><span style="display:inline-block; height:12px; border-radius:2px; background-color:%s; width:%dpx;"></span></div>',
+    x, color, w_px
+  )
+}
+
+table_df <- retailer_caliber_summary %>%
+  mutate(
+    total_bar = bar_cell(total_count, "#d3d3d3"),
+    lc_bar    = bar_cell(lc_count, "#a6c8e0"),
+    lf_bar    = bar_cell(lf_count, "#f4b680"),
+    lc_min    = ifelse(is.na(lc_min), "—", sprintf("$%.2f", lc_min)),
+    lc_median = ifelse(is.na(lc_median), "—", sprintf("$%.2f", lc_median)),
+    lc_max    = ifelse(is.na(lc_max), "—", sprintf("$%.2f", lc_max)),
+    lf_min    = ifelse(is.na(lf_min), "—", sprintf("$%.2f", lf_min)),
+    lf_median = ifelse(is.na(lf_median), "—", sprintf("$%.2f", lf_median)),
+    lf_max    = ifelse(is.na(lf_max), "—", sprintf("$%.2f", lf_max))
+  ) %>%
+  select(
+    retailer, total_bar,
+    lc_bar, lc_min, lc_median, lc_max,
+    lf_bar, lf_min, lf_median, lf_max
+  )
 
 kable(
-  retailer_benchmark,
-  digits = 1,
-  col.names = c(
-    "Caliber",
-    "Bullet Category",
-    "Avg Options / Store",
-    "Median Options / Store",
-    "Stocking Retailers"
-  ),
-  align = c("l", "l", "r", "r", "r"),
-  caption = "Average & Median Product Options Available Per Retailer"
-)
+  table_df,
+  format = "html",
+  escape = FALSE,
+  col.names = c("Retailer", "Total Options", rep(c("Count", "Min", "Median", "Max"), 2)),
+  align = c("l", "l", "l", "r", "r", "r", "l", "r", "r", "r"),
+  caption = "Ammunition Pricing and Availability by Caliber and Retailer"
+) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"), full_width = TRUE, font_size = 13) %>%
+  add_header_above(
+    c(" " = 2, "Lead-Core (USD/rd)" = 4, "Lead-Free (USD/rd)" = 4),
+    escape = FALSE
+  ) %>%
+  pack_rows(index = table(retailer_caliber_summary$caliber))
 ```
 
 ### Availability: Lead vs. Lead-Free by Retailer
 
-```{r retailer-breadth-plot, fig.height=7}
+```{r retailer-breadth-plot, fig.height=9}
+ retailer_caliber_counts <- ammo %>%
+  filter(!is.na(retailer), !is.na(caliber)) %>%
+  group_by(retailer, caliber, category) %>%
+  summarise(options_count = n(), .groups = "drop") 
+
 retailer_caliber_counts %>%
   ggplot(aes(x = retailer, y = options_count, fill = category)) +
   geom_col(position = position_dodge(preserve = "single"), width = 0.7) +
-  facet_wrap(~ caliber, scales = "free_y") +
+  facet_wrap(~ caliber, scales = "fixed") +
   scale_fill_manual(
     name = "Ammunition Type",
     values = c("Lead-Core" = "#2b5c8f", "Lead-Free" = "#d95f02")
@@ -317,7 +365,7 @@ retailer_caliber_counts %>%
     y = "Number of Distinct Options",
     caption = "Source: Scraped Retail Ammunition Data From Major Colorado Retailers"
   ) +
-  theme_minimal(base_size = 11) +
+  theme_light(base_size = 11) +
   theme(
     legend.position = "top",
     axis.text.x = element_text(angle = 45, hjust = 1),

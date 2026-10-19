@@ -131,6 +131,38 @@ clean_category <- function(df) {
     )
 }
 
+clean_quantity_ppr <- function(df) {
+  df %>%
+    mutate(
+      # 1. Extract raw quantity from title patterns: "Box of 20", "20 rounds", "20 rds", "20 count", "20ct", "20 pk"
+      extracted_qty = str_extract(
+        coalesce(name, ""),
+        regex("(?<=box of\\s)\\d+|\\b\\d+(?=\\s*(?:rounds?|rds?|count|ct|pk|pack)\\b)", ignore_case = TRUE)
+      ) %>% as.numeric(),
+      
+      # 2. Flag rows where the scraped quantity disagrees with the title text
+      qty_mismatch_flag = case_when(
+        !is.na(qty) & !is.na(extracted_qty) & qty != extracted_qty ~ TRUE,
+        TRUE ~ FALSE
+      ),
+      
+      # 3. Fill missing qty from extracted title value, defaulting to 20 for standard rifle loads if both are NA
+      qty = case_when(
+        !is.na(qty) & qty_mismatch_flag == TRUE ~ extracted_qty,
+        !is.na(qty) & qty > 0 ~ as.numeric(qty),
+        !is.na(extracted_qty) & extracted_qty > 0 ~ extracted_qty,
+        TRUE ~ 20 # Standard factory big-game centerfire box count default
+      ),
+      
+      # 4. Compute or back-calculate Price Per Round (PPR)
+      ppr = case_when(
+        !is.na(ppr) & ppr > 0 ~ ppr,
+        !is.na(price) & price > 0 & qty > 0 ~ round(price / qty, 2),
+        TRUE ~ NA_real_
+      )
+    )
+}
+
 clean_identifiers <- function(df) {
   df %>%
     mutate(
@@ -231,7 +263,8 @@ raw_data <- file_paths %>%
 # Chain the custom functions together into a single pipeline
 ammo_clean <- raw_data %>%
   clean_types_and_dates() %>%
-  mutate(ppr = price / qty) %>%
+  clean_quantity_ppr() %>%
+  #mutate(ppr = price / qty) %>%
   clean_brands() %>%
   clean_calibers() %>%
   clean_category() %>%
@@ -279,7 +312,6 @@ evaluate_imputation <- function(df_pre, df_post) {
       `Pre Count` = pre,
       `Pre %` = pre_fill_rate,
       `Post Count` = post,
-      `Post %` = post_fill_rate,
       `Net Gain` = gained
     )
 }
