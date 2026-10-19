@@ -155,11 +155,7 @@ clean_quantity_ppr <- function(df) {
       ),
       
       # 4. Compute or back-calculate Price Per Round (PPR)
-      ppr = case_when(
-        !is.na(ppr) & ppr > 0 ~ ppr,
-        !is.na(price) & price > 0 & qty > 0 ~ round(price / qty, 2),
-        TRUE ~ NA_real_
-      )
+      ppr = price / qty
     )
 }
 
